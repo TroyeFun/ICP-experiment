@@ -42,7 +42,9 @@ typedef pcl::PointCloud<Point> PCD;
 #define FRAME2FRAME 0
 #define FRAME2GLOBAL 1
 int icp_mode = FRAME2FRAME;
-string data_dir = "./data/"
+string data_dir = "./data/";
+
+bool DEBUG = false;
 
 void readPointcloud(PCD& cloud, string file_path)
 {
@@ -57,12 +59,14 @@ void readPointcloud(PCD& cloud, string file_path)
 		p.x = x; p.y = y; p.z = z;
 		cloud.push_back(p);
 	}
-	return cloud;
+	cout << file_path << " read: " << cloud.size() << " points in total." << endl;
 }
 
 void savePointcloud(PCD& pcd, string file_name)
 {
 	pcl::io::savePCDFileASCII((file_name + ".pcd").data(), pcd);
+	cout << file_name + ".pcd saved." << endl;
+
 	fstream fout;
 	fout.open((file_name + ".asc").data());
 	fout << "# Geomagic Studio\n# New Model\n";
@@ -71,29 +75,30 @@ void savePointcloud(PCD& pcd, string file_name)
 		fout << pcd[i].x << ' ' << pcd[i].y << ' ' << pcd[i].z << endl;
 	}
 	fout.close();
+	cout << file_name + ".asc saved." << endl;
 }
 
-void preprocessing(PCD::Ptr inputCloud)
+void preprocessing(PCD& inputCloud, float leafsize = 1)
 {
-	cout << "Size of point cloud before downsampling: " << inputCloud->size() << endl;
+	cout << "Point cloud downsampling: before:" << inputCloud.size();
 	// downsample to decrease computation
 	// filter
 	pcl::VoxelGrid<Point> sampler;
-	sampler.setInputCloud(inputCloud);
+	sampler.setInputCloud(inputCloud.makeShared());
 	// set size of voxel grid
-	sampler.setLeafSize(0.001f, 0.001f, 0.001f);
-	sampler.filter(*inputCloud);
+	sampler.setLeafSize(leafsize, leafsize, leafsize);
+	sampler.filter(inputCloud);
 	
-	cout << "Size of point cloud after downsampling: " << inputCloud->size() << endl;
+	cout << ", after: " << inputCloud.size() << endl;
 }
 
 void icp_iteration(
-	const vector<Point3f>& pts1,
-	const vector<Point3f>& pts2,
-	TF& T,
+	const vector<Eigen::Vector3d>& pts1,
+	const vector<Eigen::Vector3d>& pts2,
+	TF& T
 )
 {
-	Point3f p1, p2; // center of mass
+	Eigen::Vector3d p1=Eigen::Vector3d::Zero(), p2=Eigen::Vector3d::Zero(); // center of mass
 	int N = pts1.size();
 	for ( int i = 0; i < N; i++) 
 	{
@@ -101,48 +106,44 @@ void icp_iteration(
 		p2 += pts2[i];
 	}
 	p1 /= N; p2 /= N;
-	vector<Point3f> q1(N), q2(N); // remove the center
+	
+	vector<Eigen::Vector3d> q1(N), q2(N); // remove the center
 	for (int i = 0; i < N; i++)
 	{
 		q1[i] = pts1[i] - p1;
 		q2[i] = pts2[i] - p2;
 	}
+	
+	if (DEBUG) cout << "debug 0" << endl;
 
 	// compute q1 * q2^T
 	Eigen::Matrix3d W = Eigen::Matrix3d::Zero();
 	for (int i = 0; i < N; i++)
 	{
-		W += Eigen::Vector3d( q1[i].x, a1[i].y, q1[i].z) * Eigen:Vector3d(q2[i].x, q2[i].y, q2[i].z).transpose();
+		W += q1[i] * q2[i].transpose();
 	}
-	cout << "W=" << W << endl;
+	if (DEBUG) cout << "W=\n" << W << endl;
 
 	// SVD on W
 	Eigen::JacobiSVD<Eigen::Matrix3d> svd(W, Eigen::ComputeFullU|Eigen::ComputeFullV);
 	Eigen::Matrix3d U = svd.matrixU();
 	Eigen::Matrix3d V = svd.matrixV();
-	cout << "U=" << U << endl;
-	cout << "V=" << V << endl;
+	if (DEBUG) cout << "U=\n" << U << endl;
+	if (DEBUG) cout << "V=\n" << V << endl;
 
-	R = U*(V.transpose());
-	t = Eigen::Vector3d(p1.x, p1.y, p1.z) - R * Eigen::Vector3d(p2.x, p2.y, p2.z);
+	Eigen::Matrix3d R = U * V.transpose();
+	Eigen::Vector3d t = p1 - R * p2;
 
-	T = ( TF() <<
+	if (DEBUG) cout << "debug 1" << endl;
+	TF tmpT;
+	tmpT <<
 		R(0, 0), R(0, 1), R(0, 2), t(0, 0),
 		R(1, 0), R(1, 1), R(1, 2), t(1, 0),
 		R(2, 0), R(2, 1), R(2, 2), t(2, 0),
-		0      , 0      , 0      , 1
-	);
-}
-
-TF get_tf(Eigen::Matrix3d R, Eigen::Vector3d t)
-{
-	TF T = ( TF() <<
-		R(0, 0), R(0, 1), R(0, 2), t(0, 0),
-		R(1, 0), R(1, 1), R(1, 2), t(1, 0),
-		R(2, 0), R(2, 1), R(2, 2), t(2, 0),
-		0      , 0      , 0      , 1
-	);
-	return T;
+		0      , 0      , 0      , 1;
+	T = tmpT;
+	if (DEBUG) cout << "T=\n" << T << endl;
+	if (DEBUG) cout << "debug 2" << endl;
 }
 
 void icp(PCD& global_pcd)
@@ -150,22 +151,23 @@ void icp(PCD& global_pcd)
 	PCD fixed_pcd;
 	readPointcloud(fixed_pcd, data_dir+"C1.asc");
 	PCD output_pcd = fixed_pcd;  // final output
-	preprocessing(fixed_pcd.make_shared()); 	// downsample to boost NN search
+	// preprocessing(fixed_pcd, 1); 	// downsample to boost NN search
 
 	int pcd_idx = 1;
 	while (true)
 	{
 		pcd_idx++;
 		fstream fin;
-		string file_path = data_dir+"C"+std::to_string(pcd_idx)+".asc"
+		string file_path = data_dir+"C"+std::to_string(pcd_idx)+".asc";
 		fin.open(file_path);
 		if (!fin) break;
-		cout << "Processing pcd " << pcd_idx << endl;
+
+		cout << "Processing pcd " << pcd_idx << "..." << endl;
 
 		PCD new_pcd;
 		readPointcloud(new_pcd, file_path);
 		PCD origin_new_pcd = new_pcd;
-		preprocessing(new_pcd.make_shared());
+		preprocessing(new_pcd, 10);
 
 		vector<Vector3d> closest_new_pts, closest_fix_pts;
 
@@ -177,38 +179,51 @@ void icp(PCD& global_pcd)
 		for (int k = 0; ; k++) 
 		{
 			double sum = 0;
+
 			pcl:KdTreeFLANN<Point> kdtree;
-			kdtree.setInputCloud(fixed_pcd.make_shared());
+			kdtree.setInputCloud(fixed_pcd.makeShared());
+
+			if (DEBUG) cout << "debug 3" << endl;
 
 			// find closest points
 			for (int p = 0; p < new_pcd.size(); p++) 
 			{
+				// cout << p << endl;
 				vector<int> pointIdxNKNSearch(1);
 				vector<float> pointNKNSquareDistance(1);
 				if (kdtree.nearestKSearch(new_pcd.points[p], 1, pointIdxNKNSearch, pointNKNSquareDistance) <= 0)
 					cout << "can't find one" << endl;
-				if (pointNKNSquareDistance[0] > 0.1) continue // threshold
+				// if (pointNKNSquareDistance[0] > 0.1) continue; // threshold
 
-				Point f = fixed_pcd.points[pointIdxNKNSearch[0]];
-				Point n = new_pcd.points[p];
-				closest_fix_pts.push_back(Vector3d(f.x, f.y, f.z));
-				closest_new_pts.push_back(Vector3d(n.x, n.y, n.z));
+				Point fp = fixed_pcd.points[pointIdxNKNSearch[0]];
+				Point np = new_pcd.points[p];
 
-				sum += (closest_fix_pts[p] - closest_new_pts[p]).norm();
+				Eigen::Vector3d fv(fp.x, fp.y, fp.z);
+				Eigen::Vector3d nv(np.x, np.y, np.z);
+
+				closest_fix_pts.push_back(fv);
+				closest_new_pts.push_back(nv);
+
+				sum += (fv - nv).norm();
+
 			}
-			if (k % 20 == 0) cout << "Iter: " << k << ", error: " << sum << endl;
+			if (DEBUG) cout << "debug 4" << endl;
 
 			// calculate TF
 			TF T;
-			icp_iteration(fixed_pcd, new_pcd, T);
+			icp_iteration(closest_fix_pts, closest_new_pts, T);
 
+			if (DEBUG) cout << "debug 5" << endl;
 			// update new_pcd
 			pcl::transformPointCloud(new_pcd, new_pcd, T);
 
+			if (DEBUG) cout << "debug 6" << endl;
 			// update final TF
 			final_T = T * final_T;
 
-			if ((T - TF::Identity()).maxCoeff() < 1e-6 && sum < 1) 
+			if (k % 20 == 0) cout << "Iter: " << k << ", error: " << sum/new_pcd.size() << "\nT=\n" << T << endl;
+
+			if ((T - TF::Identity()).maxCoeff() < 1e-6) // && sum/new_pcd.size() < 10) 
 			{
 				cout << "pcd " << pcd_idx << ": converged after " << k << " iterations." << endl;
 				break;
@@ -226,10 +241,10 @@ void icp(PCD& global_pcd)
 		output_pcd += origin_new_pcd;
 
 		// update fixed_pcd
-		if (icp_mode = FRAME2GLOBAL)
+		if (icp_mode == FRAME2GLOBAL)
 		{
 			fixed_pcd = output_pcd;
-			preprocessing(fixed_pcd.make_shared());
+			// preprocessing(fixed_pcd, 1);
 		}
 		
 	}
@@ -240,6 +255,6 @@ int main()
 {
     PCD global_pcd;
 	icp(global_pcd);
-	savePointcloud(global_pcd, data_dir + "output")
+	savePointcloud(global_pcd, data_dir + "output");
 }
 
