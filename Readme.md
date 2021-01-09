@@ -6,7 +6,7 @@
 
 ### 系统
 
-本实验环境为MacOS Mojave 10.14.6，在Linux中也应当适用。
+本实验环境为MacOS Mojave 10.14.6，在其他版本的MacOS以及Linux中也应当适用。
 
 
 
@@ -56,6 +56,7 @@ $ ./build/ICP_PROC
 
 ```bash
 $ pcl_viewer ./data/output.pcd
+# 界面上输入数字3可对其进行颜色渲染，便于可视化
 ```
 
 

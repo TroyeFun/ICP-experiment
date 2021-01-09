@@ -68,7 +68,7 @@ void savePointcloud(PCD& pcd, string file_name)
 	cout << file_name + ".pcd saved." << endl;
 
 	fstream fout;
-	fout.open((file_name + ".asc").data());
+	fout.open((file_name + ".asc").data(), ios::out);
 	fout << "# Geomagic Studio\n# New Model\n";
 	for (int i = 0; i < pcd.size(); i++) 
 	{
@@ -167,7 +167,7 @@ void icp(PCD& global_pcd)
 		PCD new_pcd;
 		readPointcloud(new_pcd, file_path);
 		PCD origin_new_pcd = new_pcd;
-		preprocessing(new_pcd, 10);
+		preprocessing(new_pcd, 5);
 
 		vector<Vector3d> closest_new_pts, closest_fix_pts;
 
@@ -175,13 +175,13 @@ void icp(PCD& global_pcd)
 		// Eigen::Vector3d final_t = Eigen::Vector3d::Zero();
 		TF final_T = TF::Identity();
 
+		pcl:KdTreeFLANN<Point> kdtree;
+		kdtree.setInputCloud(fixed_pcd.makeShared());
+
 		// icp iterations 
 		for (int k = 0; ; k++) 
 		{
 			double sum = 0;
-
-			pcl:KdTreeFLANN<Point> kdtree;
-			kdtree.setInputCloud(fixed_pcd.makeShared());
 
 			if (DEBUG) cout << "debug 3" << endl;
 
@@ -193,7 +193,7 @@ void icp(PCD& global_pcd)
 				vector<float> pointNKNSquareDistance(1);
 				if (kdtree.nearestKSearch(new_pcd.points[p], 1, pointIdxNKNSearch, pointNKNSquareDistance) <= 0)
 					cout << "can't find one" << endl;
-				// if (pointNKNSquareDistance[0] > 0.1) continue; // threshold
+				if (pointNKNSquareDistance[0] > 10) continue; // threshold
 
 				Point fp = fixed_pcd.points[pointIdxNKNSearch[0]];
 				Point np = new_pcd.points[p];
@@ -221,11 +221,17 @@ void icp(PCD& global_pcd)
 			// update final TF
 			final_T = T * final_T;
 
-			if (k % 20 == 0) cout << "Iter: " << k << ", error: " << sum/new_pcd.size() << "\nT=\n" << T << endl;
+			if (k % 20 == 0) 
+			{
+				cout << "Iter: " << k << ", error: " << sum/closest_new_pts.size() 
+					<< ", valid point: " << closest_new_pts.size() << endl;
+				cout << "T=\n" << T << endl;
+			}
 
 			if ((T - TF::Identity()).maxCoeff() < 1e-6) // && sum/new_pcd.size() < 10) 
 			{
-				cout << "pcd " << pcd_idx << ": converged after " << k << " iterations." << endl;
+				cout << "pcd " << pcd_idx << ": converged after " << k << " iterations" 
+				    ", error: " << sum/closest_new_pts.size() << endl;
 				break;
 			} 				
 
